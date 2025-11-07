@@ -1,0 +1,61 @@
+services:
+  db:
+    image: postgres:13
+    environment:
+      POSTGRES_DB: moodle
+      POSTGRES_USER: moodle
+      POSTGRES_PASSWORD: moodle
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    networks:
+      - moodle-net
+
+  moodle:
+    image: moodlehq/moodle-php-apache:8.2
+    environment:
+      MOODLE_DATABASE_TYPE: pgsql
+      MOODLE_DATABASE_HOST: db
+      MOODLE_DATABASE_NAME: moodle
+      MOODLE_DATABASE_USER: moodle
+      MOODLE_DATABASE_PASSWORD: moodle
+      MOODLE_SITE_URL: http://localhost:8080
+    volumes:
+      - moodle_data:/var/www/html
+      - ./moodledata:/var/moodledata
+    ports:
+      - "8080:80"
+    depends_on:
+      - db
+    networks:
+      - moodle-net
+      - jobe-net
+    command: >
+      bash -c "
+        if [ ! -f /var/www/html/config.php ]; then
+          git clone --depth 1 --branch MOODLE_403_STABLE https://github.com/moodle/moodle.git /tmp/moodle &&
+          cp -r /tmp/moodle/* /var/www/html/ &&
+          cp /tmp/moodle/.gitignore /var/www/html/ &&
+          chown -R www-data:www-data /var/www/html &&
+          chmod -R 755 /var/www/html;
+        fi &&
+        apache2-foreground
+      "
+
+  jobe:
+    image: trampgeek/jobeinabox@sha256:1dfe026e8dd5cee4ea93bc7366207ae3e9910888d5dc343c85fb1508e8aebd8f
+    container_name: jobe
+    restart: unless-stopped
+    ports:
+      - "4000:80"
+    networks:
+      - jobe-net
+
+volumes:
+  db_data:
+  moodle_data:
+
+networks:
+  moodle-net:
+    driver: bridge
+  jobe-net:
+    driver: bridge
