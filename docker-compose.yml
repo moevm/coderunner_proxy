@@ -1,0 +1,19 @@
+services:
+  jobe-proxy:
+    build: .
+    container_name: jobe-proxy
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      - JOBE_SERVER=http://jobe:80
+      - PROXY_PORT=5000
+    networks:
+      - moodle-coderunner_moodle-net
+      - moodle-coderunner_jobe-net
+
+networks:
+  moodle-coderunner_moodle-net:
+    external: true
+  moodle-coderunner_jobe-net:
+    external: true
