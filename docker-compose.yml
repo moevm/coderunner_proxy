@@ -1,19 +1,69 @@
+version: '3.8'
+
 services:
-  jobe-proxy:
-    build: .
-    container_name: jobe-proxy
-    restart: unless-stopped
-    ports:
-      - "5000:5000"
+  db:
+    image: postgres:13
     environment:
-      - JOBE_SERVER=http://jobe:80
-      - PROXY_PORT=5000
+      POSTGRES_DB: moodle
+      POSTGRES_USER: moodle
+      POSTGRES_PASSWORD: moodle
+    volumes:
+      - db_data:/var/lib/postgresql/data
     networks:
-      - moodle-coderunner_moodle-net
-      - moodle-coderunner_jobe-net
+      - moodle-net
+
+  moodle:
+    image: moodlehq/moodle-php-apache:8.2
+    environment:
+      MOODLE_DATABASE_TYPE: pgsql
+      MOODLE_DATABASE_HOST: db
+      MOODLE_DATABASE_NAME: moodle
+      MOODLE_DATABASE_USER: moodle
+      MOODLE_DATABASE_PASSWORD: moodle
+      MOODLE_SITE_URL: http://localhost:8080
+    volumes:
+      - moodle_data:/var/www/html
+      - ./moodledata:/var/moodledata
+      - ./init-moodle.sh:/init-moodle.sh
+    ports:
+      - "8080:80"
+    depends_on:
+      - db
+    networks:
+      - moodle-net
+      - jobe-net
+    command: bash /init-moodle.sh
+
+  proxy:
+    build: .
+    image: jobe-proxy:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - JOBE_SERVERS=http://jobe1:80,http://jobe2:80
+    depends_on:
+      - jobe1
+      - jobe2
+    networks:
+      - jobe-net
+
+  jobe1:
+    image: trampgeek/jobeinabox:latest
+    restart: unless-stopped
+    networks:
+      - jobe-net
+
+  jobe2:
+    image: trampgeek/jobeinabox:latest
+    restart: unless-stopped
+    networks:
+      - jobe-net
 
 networks:
-  moodle-coderunner_moodle-net:
-    external: true
-  moodle-coderunner_jobe-net:
-    external: true
+  moodle-net:
+  jobe-net:
+
+volumes:
+  db_data:
+  moodle_data:
+  moodledata_data:
