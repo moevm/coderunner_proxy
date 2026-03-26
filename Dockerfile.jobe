@@ -1,0 +1,9 @@
+FROM trampgeek/jobeinabox:latest
+
+# Disable access control permanently - use single quotes to avoid issues
+RUN mkdir -p /var/www/html/restricted && \
+    echo '<?php function check_access() { return true; } ?>' > /var/www/html/restricted/access_check.php
+
+# Set proper permissions
+RUN chown -R www-data:www-data /var/www/html && \
+    chmod -R 755 /var/www/html
