@@ -39,11 +39,15 @@ services:
     image: jobe-proxy:latest
     ports:
       - "3000:3000"
+    volumes:
+      - ./nodes.json:/app/nodes.json
     environment:
       - JOBE_SERVERS=http://jobe1:80,http://jobe2:80
+      - MONGO_URI=mongodb://mongodb:27017
     depends_on:
       - jobe1
       - jobe2
+      - mongodb
     networks:
       - jobe-net
 
@@ -52,10 +56,55 @@ services:
     restart: unless-stopped
     networks:
       - jobe-net
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'         # Максимум 4 ядро CPU
+          memory: 2048M       # Максимум 2048 МБ оперативной памяти
 
   jobe2:
     image: trampgeek/jobeinabox:latest
     restart: unless-stopped
+    networks:
+      - jobe-net
+    deploy:
+      resources:
+        limits:
+          cpus: '3.0'         # Максимум 8 ядро CPU
+          memory: 1024M       # Максимум 1024 МБ оперативной памяти
+
+  jobe3:
+    image: trampgeek/jobeinabox:latest
+    restart: unless-stopped
+    networks:
+      - jobe-net
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'         # Максимум 1 ядро CPU
+          memory: 512M       # Максимум 512 МБ оперативной памяти
+
+  mongodb:
+    image: mongo:latest
+    container_name: mongo
+    restart: always
+    volumes:
+      - mongo_data:/data/db
+    ports:
+      - "27017:27017"
+    networks:
+      - jobe-net
+
+  mongo-express:
+    image: mongo-express:latest
+    restart: always
+    ports:
+      - "8081:8081"
+    environment:
+      - ME_CONFIG_MONGODB_SERVER=mongodb
+      - ME_CONFIG_MONGODB_PORT=27017
+    depends_on:
+      - mongodb
     networks:
       - jobe-net
 
@@ -67,3 +116,4 @@ volumes:
   db_data:
   moodle_data:
   moodledata_data:
+  mongo_data:

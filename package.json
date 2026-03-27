@@ -1,13 +1,14 @@
 {
-  "name": "react-example",
+  "name": "jobe-proxy-dashboard",
   "private": true,
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "tsx server.ts",
+    "dev": "python3 server.py",
     "build": "tsc && vite build",
-    "start": "node server.ts",
-    "lint": "tsc --noEmit"
+    "start": "python3 server.py",
+    "lint": "tsc --noEmit",
+    "test:load": "python3 load_test.py"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",
@@ -30,6 +31,7 @@
     "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
     "autoprefixer": "^10.4.21",
+    "lightningcss": "^1.31.1",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",

@@ -1,18 +1,23 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 import React, { useState, useEffect } from 'react';
-import { 
-  Container, 
-  Typography, 
-  Box, 
-  Card, 
-  CardContent, 
-  Grid, 
-  Button, 
-  List, 
-  ListItem, 
-  ListItemText, 
+import {
+  Container,
+  Typography,
+  Box,
+  Card,
+  CardContent,
+  Grid,
+  Button,
+  List,
+  ListItem,
+  ListItemText,
   ListItemIcon,
-  Chip, 
-  CircularProgress, 
+  Chip,
+  CircularProgress,
   Alert,
   AppBar,
   Toolbar,
@@ -20,17 +25,29 @@ import {
   Divider,
   ThemeProvider,
   createTheme,
-  CssBaseline
+  CssBaseline,
+  TextField,
+  Select,
+  MenuItem,
+  FormControl,
+  InputLabel,
+  IconButton,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions
 } from '@mui/material';
-import { 
-  Dns as ServerIcon, 
-  Security as ShieldIcon, 
-  CheckCircle as CheckCircleIcon, 
-  Error as ErrorIcon, 
+import {
+  Dns as ServerIcon,
+  CheckCircle as CheckCircleIcon,
+  Error as ErrorIcon,
   Refresh as RefreshIcon,
   Settings as SettingsIcon,
   Storage as StorageIcon,
-  Hub as HubIcon
+  Hub as HubIcon,
+  Queue as QueueIcon,
+  Speed as SpeedIcon,
+  InfoOutlined as InfoIcon // Новая иконка
 } from '@mui/icons-material';
 import { motion } from 'motion/react';
 
@@ -61,16 +78,36 @@ const theme = createTheme({
   },
 });
 
+interface JobeNode {
+  url: string;
+  name: string;
+  languages: string[];
+  power: string;
+  active_runs?: number;
+  is_online?: boolean;
+}
+
 interface HealthStatus {
   status: string;
-  servers: string[];
-  nextServer: string;
+  nodes: JobeNode[];
+  algorithm: string;
+  source?: string;
+  queue: {
+    active: number;
+    limit: number;
+    pending: number;
+  };
 }
 
 export default function App() {
   const [status, setStatus] = useState<HealthStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [testResults, setTestResults] = useState<{ name: string, duration: number, success: boolean }[]>([]);
+  const [testing, setTesting] = useState(false);
+  const [totalTasksInput, setTotalTasksInput] = useState(1000);
+  const [concurrencyInput, setConcurrencyInput] = useState(50);
+  const [infoOpen, setInfoOpen] = useState(false);
 
   const fetchStatus = async () => {
     setLoading(true);
@@ -84,6 +121,57 @@ export default function App() {
       setError(err.message);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const runLoadTest = async () => {
+    setTesting(true);
+    setTestResults([]);
+
+    const taskTemplates = [
+      { name: 'Low (Print)', code: 'print("Hello world")', lang: 'python3' },
+      { name: 'Medium (Single Library)', code: 'import numpy as np\na = np.array([1, 2, 3])\nprint(a.mean())', lang: 'python3' },
+      { name: 'High (NumPy)', code: 'def check(a, b, c):\n if a > b:\n if b > c:\n for i in range(10):\n while a < 100:\n a += 1\n if a == 50: break\n elif a == c:\n for j in range(5): print(j)\n else:\n try:\n res = a / b\n except:\n res = 0\n return res\n# Повторим блоки, чтобы набрать controls > 10\nprint(check(1, 2, 3))\nprint(check(4, 5, 6))', lang: 'python3' },
+    ];
+
+    const TOTAL_TASKS = totalTasksInput;
+    const BATCH_SIZE = concurrencyInput;
+    const results: { name: string, duration: number, success: boolean }[] = [];
+
+    for (let i = 0; i < TOTAL_TASKS; i += BATCH_SIZE) {
+      const batch = Array.from({ length: Math.min(BATCH_SIZE, TOTAL_TASKS - i) }, (_, j) => {
+        const task = taskTemplates[(i + j) % taskTemplates.length];
+        const start = Date.now();
+        return fetch('/jobe/index.php/restapi/runs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ run_spec: { language_id: task.lang, sourcecode: task.code } })
+        })
+        .then(res => ({ name: task.name, duration: Date.now() - start, success: res.ok }))
+        .catch(() => ({ name: task.name, duration: Date.now() - start, success: false }));
+      });
+
+      const batchResults = await Promise.all(batch);
+      results.push(...batchResults);
+      setTestResults([...results]);
+      fetchStatus();
+    }
+
+    setTesting(false);
+  };
+
+  const handleAlgorithmChange = async (newAlgo: string) => {
+    try {
+      const response = await fetch('/api/config/algorithm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ algorithm: newAlgo })
+      });
+      if (response.ok) {
+        fetchStatus();
+      }
+    } catch (err) {
+      console.error('Failed to change algorithm:', err);
     }
   };
 
@@ -103,9 +191,9 @@ export default function App() {
             <Typography variant="h6" component="div" sx={{ flexGrow: 1, color: 'text.primary' }}>
               Панель управления Jobe Proxy
             </Typography>
-            <Button 
-              variant="outlined" 
-              startIcon={loading ? <CircularProgress size={20} /> : <RefreshIcon />} 
+            <Button
+              variant="outlined"
+              startIcon={loading ? <CircularProgress size={20} /> : <RefreshIcon />}
               onClick={fetchStatus}
               disabled={loading}
             >
@@ -160,7 +248,7 @@ export default function App() {
                       <ServerIcon color="primary" />
                     </Box>
                     <Typography variant="h4" component="div" sx={{ mb: 1 }}>
-                      {status?.servers.length || 0}
+                      {status?.nodes.length || 0}
                     </Typography>
                     <Typography variant="body2" color="textSecondary">
                       Количество настроенных экземпляров Jobe в кластере.
@@ -170,23 +258,33 @@ export default function App() {
               </motion.div>
             </Grid>
 
-            {/* Карточка API шлюза */}
+            {/* Карточка очереди задач */}
             <Grid size={{ xs: 12, md: 4 }}>
               <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
                 <Card elevation={1}>
                   <CardContent>
                     <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
                       <Typography color="textSecondary" variant="overline" sx={{ fontWeight: 'bold' }}>
-                        API Шлюз
+                        Очередь задач
                       </Typography>
-                      <ShieldIcon sx={{ color: '#f57c00' }} />
+                      <QueueIcon color="action" />
                     </Box>
                     <Typography variant="h4" component="div" sx={{ mb: 1 }}>
-                      Активен
+                      {status?.queue?.active || 0} / {status?.queue?.limit || 0}
                     </Typography>
                     <Typography variant="body2" color="textSecondary">
-                      Пересылка X-API-KEY включена для всех запросов.
+                      {status?.queue?.pending || 0} задач в ожидании.
                     </Typography>
+                    <Box sx={{ mt: 1, height: 4, width: '100%', backgroundColor: '#eee', borderRadius: 2, overflow: 'hidden' }}>
+                      <Box
+                        sx={{
+                          height: '100%',
+                          width: `${Math.min(100, ((status?.queue?.active || 0) / (status?.queue?.limit || 1)) * 100)}%`,
+                          backgroundColor: (status?.queue?.active || 0) >= (status?.queue?.limit || 0) ? '#f44336' : '#2196f3',
+                          transition: 'width 0.3s ease'
+                        }}
+                      />
+                    </Box>
                   </CardContent>
                 </Card>
               </motion.div>
@@ -197,50 +295,181 @@ export default function App() {
               <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}>
                 <Paper elevation={1} sx={{ overflow: 'hidden' }}>
                   <Box sx={{ p: 2, backgroundColor: '#fafafa', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <Typography variant="h6">Конфигурация кластера</Typography>
-                    <Chip label="Round-Robin Планирование" size="small" variant="outlined" />
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                      <Typography variant="h6">Конфигурация кластера</Typography>
+                      {status?.source && (
+                        <Chip
+                          label={status.source === 'json' ? 'Из файла' : 'Из настроек Docker'}
+                          size="small"
+                          color={status.source === 'json' ? 'primary' : 'warning'}
+                          variant="outlined"
+                        />
+                      )}
+                    </Box>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                      <FormControl size="small" sx={{ minWidth: 200 }}>
+                        <InputLabel>Алгоритм планирования</InputLabel>
+                        <Select
+                          value={status?.algorithm || 'smart_power'}
+                          label="Алгоритм планирования"
+                          onChange={(e) => handleAlgorithmChange(e.target.value)}
+                          disabled={loading}
+                        >
+                          <MenuItem value="smart_power">Smart Power (Мощность + Анализ)</MenuItem>
+                          <MenuItem value="round_robin">Round-Robin (Простой)</MenuItem>
+                          <MenuItem value="weighted_round_robin">Weighted Round-Robin (Мощность + Round-Robin)</MenuItem>
+                          <MenuItem value="least_active">Least Active (По нагрузке)</MenuItem>
+                        </Select>
+                      </FormControl>
+                      <IconButton
+                      color="primary"
+                      onClick={() => setInfoOpen(true)}
+                      title="Справка по алгоритмам"
+                    >
+                      <InfoIcon />
+                    </IconButton>
+                    </Box>
                   </Box>
                   <Divider />
                   <List disablePadding>
-                    {status?.servers.map((server, idx) => (
+                    {status?.nodes.map((node, idx) => (
                       <React.Fragment key={idx}>
                         <ListItem sx={{ py: 2 }}>
                           <ListItemIcon>
-                            <Box 
-                              sx={{ 
-                                width: 12, 
-                                height: 12, 
-                                borderRadius: '50%', 
-                                backgroundColor: status.nextServer === server ? 'success.main' : 'grey.400',
-                                boxShadow: status.nextServer === server ? '0 0 8px #4caf50' : 'none'
-                              }} 
+                            <Box
+                              sx={{
+                                width: 12,
+                                height: 12,
+                                borderRadius: '50%',
+                                // success.main если true (зеленый), error.main если false (красный)
+                                backgroundColor: node.is_online ? 'success.main' : 'error.main',
+                                 boxShadow: node.is_online ? '0 0 8px #4caf50' : '0 0 8px #f44336'
+                              }}
                             />
                           </ListItemIcon>
-                          <ListItemText 
-                            primary={server} 
-                            primaryTypographyProps={{ sx: { fontFamily: 'monospace', fontSize: '0.9rem' } }}
+                          <ListItemText
+                            primary={
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                <Typography variant="subtitle1" sx={{ fontWeight: 'bold' }}>
+                                  {node.name}
+                                </Typography>
+                                <Chip
+                                  label={
+                                    node.power === 'High' ? 'Высокая' :
+                                    node.power === 'Medium' ? 'Средняя' :
+                                    node.power === 'Low' ? 'Низкая' : node.power
+                                  }
+                                  size="small"
+                                  color={node.power === 'High' ? 'error' : node.power === 'Medium' ? 'warning' : 'default'}
+                                  sx={{ height: 20, fontSize: '0.65rem' }}
+                                />
+                                {node.active_runs !== undefined && (
+                                  <Chip
+                                    label={`Активно: ${node.active_runs}`}
+                                    size="small"
+                                    color="info"
+                                    variant="outlined"
+                                    sx={{ height: 20, fontSize: '0.65rem' }}
+                                  />
+                                )}
+                              </Box>
+                            }
+                            secondary={
+                              <Box>
+                                <Typography variant="caption" sx={{ fontFamily: 'monospace', display: 'block' }}>
+                                  {node.url}
+                                </Typography>
+                                <Box sx={{ mt: 0.5, display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                                  {node.languages.map(lang => (
+                                    <Chip key={lang} label={lang} size="small" variant="outlined" sx={{ height: 18, fontSize: '0.6rem' }} />
+                                  ))}
+                                </Box>
+                              </Box>
+                            }
+                            primaryTypographyProps={{ component: 'div' }}
+                            secondaryTypographyProps={{ component: 'div' }}
                           />
-                          {status.nextServer === server && (
-                            <Chip 
-                              label="Следующий в очереди" 
-                              color="success" 
-                              size="small" 
-                              sx={{ fontWeight: 'bold', fontSize: '0.7rem' }} 
-                            />
-                          )}
                         </ListItem>
-                        {idx < status.servers.length - 1 && <Divider component="li" />}
+                        {idx < status.nodes.length - 1 && <Divider component="li" />}
                       </React.Fragment>
                     ))}
                     {!status && !loading && (
                       <ListItem>
-                        <ListItemText 
-                          primary="Серверы не обнаружены. Проверьте переменные окружения." 
-                          sx={{ textAlign: 'center', fontStyle: 'italic', color: 'text.secondary' }} 
+                        <ListItemText
+                          primary="Серверы не обнаружены. Проверьте файл nodes.json."
+                          sx={{ textAlign: 'center', fontStyle: 'italic', color: 'text.secondary' }}
                         />
                       </ListItem>
                     )}
                   </List>
+                </Paper>
+              </motion.div>
+            </Grid>
+
+            <Grid size={{ xs: 12 }}>
+              <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }}>
+                <Paper sx={{ p: 2, mb: 3 }}>
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                    <Typography variant="h6">Нагрузочное тестирование</Typography>
+                    <Button
+                      variant="contained"
+                      color="primary"
+                      onClick={runLoadTest}
+                      disabled={testing}
+                      startIcon={testing ? <CircularProgress size={20} color="inherit" /> : <SpeedIcon />}
+                    >
+                      {testing ? 'Тестирование...' : `Запустить тест (${totalTasksInput} задач)`}
+                    </Button>
+                  </Box>
+
+                  <Grid container spacing={2} sx={{ mb: 2 }}>
+                    <Grid size={{ xs: 6 }}>
+                      <TextField
+                        label="Всего тестов"
+                        type="number"
+                        value={totalTasksInput}
+                        onChange={(e) => setTotalTasksInput(parseInt(e.target.value) || 0)}
+                        fullWidth
+                        size="small"
+                        disabled={testing}
+                      />
+                    </Grid>
+                    <Grid size={{ xs: 6 }}>
+                      <TextField
+                        label="Пользователей (одновременно)"
+                        type="number"
+                        value={concurrencyInput}
+                        onChange={(e) => setConcurrencyInput(parseInt(e.target.value) || 0)}
+                        fullWidth
+                        size="small"
+                        disabled={testing}
+                      />
+                    </Grid>
+                  </Grid>
+
+                  <Typography variant="body2" color="textSecondary" sx={{ mb: 2 }}>
+                    Имитация реальной нагрузки: отправка {totalTasksInput} запросов пачками по {concurrencyInput} (имитация {concurrencyInput} пользователей).
+                  </Typography>
+
+                  {testResults.length > 0 && (
+                    <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                      {testResults.map((res, i) => (
+                        <Chip
+                          key={i}
+                          label={`${res.name}: ${res.duration}ms`}
+                          color={res.success ? 'success' : 'error'}
+                          variant="outlined"
+                          size="small"
+                        />
+                      ))}
+                      <Chip
+                        label={`Среднее: ${(testResults.reduce((a, b) => a + b.duration, 0) / testResults.length).toFixed(0)}ms`}
+                        sx={{ fontWeight: 'bold' }}
+                        variant="filled"
+                        size="small"
+                      />
+                    </Box>
+                  )}
                 </Paper>
               </motion.div>
             </Grid>
@@ -256,10 +485,7 @@ export default function App() {
                     # В настройках CodeRunner:
                   </Typography>
                   <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
-                    Jobe Server: <Box component="span" sx={{ color: 'white' }}>http://proxy:3000</Box>
-                  </Typography>
-                  <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
-                    Jobe Port: <Box component="span" sx={{ color: 'white' }}>3000</Box>
+                    Jobe Server: <Box component="span" sx={{ color: 'white' }}>proxy:3000</Box>
                   </Typography>
                   <Box sx={{ mt: 2, pt: 2, borderTop: '1px solid #334155' }}>
                     <Typography variant="caption" sx={{ color: '#94a3b8' }}>
@@ -286,16 +512,75 @@ export default function App() {
                     <ListItemText primary="JobeInABox" secondary="Среда выполнения кода (песочница)" />
                   </ListItem>
                   <ListItem>
-                    <ListItemText primary="Node.js Proxy" secondary="Балансировщик нагрузки и API шлюз" />
+                    <ListItemText primary="Python Proxy" secondary="Балансировщик нагрузки и API шлюз" />
                   </ListItem>
                   <ListItem>
                     <ListItemText primary="PostgreSQL" secondary="База данных для Moodle" />
+                  </ListItem>
+                  <ListItem>
+                    <ListItemText primary="MongoDB" secondary="База данных для логов" />
                   </ListItem>
                 </List>
               </motion.div>
             </Grid>
           </Grid>
         </Container>
+
+        <Dialog
+          open={infoOpen}
+          onClose={() => setInfoOpen(false)}
+          maxWidth="sm"
+          fullWidth
+        >
+          <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <SettingsIcon color="primary" />
+            Алгоритмы планирования задач
+          </DialogTitle>
+          <DialogContent dividers>
+            <Box sx={{ mb: 2 }}>
+              <Typography variant="subtitle1" sx={{ fontWeight: 'bold', color: 'primary.main' }}>
+                Smart Power (Умный)
+              </Typography>
+              <Typography variant="body2">
+                Анализирует код (через AST-дерево или Regex) до его запуска. Оценивает количество циклов, условий и "тяжелых" библиотек (numpy, pandas).
+                Направляет сложные задачи на мощные узлы, а простые — на легкие.
+              </Typography>
+            </Box>
+
+            <Box sx={{ mb: 2 }}>
+              <Typography variant="subtitle1" sx={{ fontWeight: 'bold', color: 'primary.main' }}>
+                Round-Robin
+              </Typography>
+              <Typography variant="body2">
+                Простое циклическое распределение. Задачи отправляются на узлы по очереди (1, 2, 3...), не учитывая их текущую нагрузку или сложность кода.
+              </Typography>
+            </Box>
+
+            <Box sx={{ mb: 2 }}>
+              <Typography variant="subtitle1" sx={{ fontWeight: 'bold', color: 'primary.main' }}>
+                Weighted Round-Robin
+              </Typography>
+              <Typography variant="body2">
+                Усовершенствованный Round-Robin. Учитывает "вес" (мощность) сервера. Сервер с пометкой <b>High</b> получит в 3 раза больше задач, чем <b>Low</b>, за один цикл обхода.
+              </Typography>
+            </Box>
+
+            <Box>
+              <Typography variant="subtitle1" sx={{ fontWeight: 'bold', color: 'primary.main' }}>
+                Least Active
+              </Typography>
+              <Typography variant="body2">
+                Динамическое распределение. Прокси отслеживает количество активных сетевых соединений с каждым узлом и отправляет новую задачу на тот сервер, который в данный момент наименее загружен.
+              </Typography>
+            </Box>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setInfoOpen(false)} color="primary" variant="contained">
+              Понятно
+            </Button>
+          </DialogActions>
+        </Dialog>
+
       </Box>
     </ThemeProvider>
   );
