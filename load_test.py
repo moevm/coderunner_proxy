@@ -4,7 +4,7 @@ import time
 import random
 import sys
 import ast
-import re
+import os
 
 PROXY_URL = 'http://localhost:3000/jobe/index.php/restapi/runs'
 
@@ -174,8 +174,18 @@ async def run_task(client, task, task_id, scheduler):
         scheduler.release_node(node['url'])
 
 
-async def start_load_test(total_tasks=100, concurrency=10, algo="smart_power"):
+async def start_load_test(total_tasks=100, concurrency=10, algo="smart_power", custom_code=None):
     print(f'=== Starting Load Test | Algo: {algo} ===')
+    current_tasks = list(tasks)
+
+    if custom_code:
+        print(f'=== Custom code from file added to task pool ===')
+        current_tasks.append({
+            'name': 'Custom-High-File',
+            'language': 'python3',
+            'code': str(custom_code)
+        })
+
     scheduler = SchedulerEmulator(algorithm=algo)
     results = []
     start_time = time.time()
@@ -185,12 +195,23 @@ async def start_load_test(total_tasks=100, concurrency=10, algo="smart_power"):
         for i in range(total_tasks): queue.put_nowait(i + 1)
 
         async def worker():
-            while not queue.empty():
-                task_id = await queue.get()
-                task = random.choice(tasks)
-                res = await run_task(client, task, task_id, scheduler)
-                results.append(res)
-                queue.task_done()
+            while True:
+                try:
+                    # Пытаемся взять задачу без ожидания
+                    task_idx = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    # Только если очередь ТОЧНО пуста, выходим
+                    break
+
+                try:
+                    task = random.choice(current_tasks)
+                    res = await run_task(client, task, task_idx, scheduler)
+                    results.append(res)
+                except Exception as e:
+                    # Если задача упала, логируем, но не даем воркеру умереть
+                    print(f"\nWorker error: {e}")
+                finally:
+                    queue.task_done()
 
         workers = [asyncio.create_task(worker()) for _ in range(min(concurrency, total_tasks))]
         await asyncio.gather(*workers)
@@ -226,4 +247,11 @@ if __name__ == "__main__":
     total = int(sys.argv[1]) if len(sys.argv) > 1 else 100
     concurrency = int(sys.argv[2]) if len(sys.argv) > 2 else 10
     algo = sys.argv[3] if len(sys.argv) > 3 else "smart_power"
-    asyncio.run(start_load_test(total, concurrency, algo))
+    file_path = sys.argv[4] if len(sys.argv) > 4 else None
+
+    loaded_code = None
+    if file_path and os.path.exists(file_path):
+        with open(file_path, 'r', encoding='utf-8') as f:
+            loaded_code = f.read()
+
+    asyncio.run(start_load_test(total, concurrency, algo, loaded_code))

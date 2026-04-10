@@ -35,7 +35,13 @@ import {
   Dialog,
   DialogTitle,
   DialogContent,
-  DialogActions
+  DialogActions,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
 } from '@mui/material';
 import {
   Dns as ServerIcon,
@@ -104,10 +110,35 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<{ name: string, duration: number, success: boolean }[]>([]);
+  const [logs, setLogs] = useState<any[]>([]);
+  const [logsLoading, setLogsLoading] = useState(false);
   const [testing, setTesting] = useState(false);
   const [totalTasksInput, setTotalTasksInput] = useState(1000);
   const [concurrencyInput, setConcurrencyInput] = useState(50);
   const [infoOpen, setInfoOpen] = useState(false);
+
+  const fetchLogs = async () => {
+      setLogsLoading(true);
+      try {
+        const response = await fetch('/api/logs?limit=50');
+        const data = await response.json();
+        setLogs(data);
+      } catch (err) {
+        console.error("Ошибка загрузки логов:", err);
+      } finally {
+        setLogsLoading(false);
+      }
+  };
+
+    const exportToJson = () => {
+      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(logs, null, 2));
+      const downloadAnchorNode = document.createElement('a');
+      downloadAnchorNode.setAttribute("href", dataStr);
+      downloadAnchorNode.setAttribute("download", `jobe_logs_${new Date().toISOString()}.json`);
+      document.body.appendChild(downloadAnchorNode);
+      downloadAnchorNode.click();
+      downloadAnchorNode.remove();
+    };
 
   const fetchStatus = async () => {
     setLoading(true);
@@ -404,6 +435,63 @@ export default function App() {
                   </List>
                 </Paper>
               </motion.div>
+            </Grid>
+
+            <Grid size={{ xs: 12 }}>
+              <Paper sx={{ p: 2 }}>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 2 }}>
+                  <Typography variant="h6">Журнал событий (Последние 50)</Typography>
+                  <Box sx={{ gap: 1, display: 'flex' }}>
+                    <Button
+                      variant="outlined"
+                      startIcon={<RefreshIcon />}
+                      onClick={fetchLogs}
+                      disabled={logsLoading}
+                    >
+                      Обновить
+                    </Button>
+                    <Button
+                      variant="contained"
+                      color="secondary"
+                      onClick={exportToJson}
+                      disabled={logs.length === 0}
+                    >
+                      Экспорт JSON
+                    </Button>
+                  </Box>
+                </Box>
+
+                <Divider />
+                <TableContainer sx={{ maxHeight: 500 }}>
+                  <Table stickyHeader size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>Время (МСК)</TableCell>
+                        <TableCell>Метод</TableCell>
+                        <TableCell>Путь</TableCell>
+                        <TableCell>Код</TableCell>
+                        <TableCell align="right">Задержка (мс)</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {logs.map((log) => (
+                          <TableRow key={log._id}>
+                          <TableCell sx={{ fontSize: '0.8rem' }}>
+                            {/* Отображаем время как есть из ISO строки, либо форматируем */}
+                            {log.timestamp.replace('T', ' ').split('.')[0]}
+                          </TableCell>
+                          <TableCell><Chip label={log.method} size="small" /></TableCell>
+                          <TableCell sx={{ fontFamily: 'monospace' }}>{log.path}</TableCell>
+                          <TableCell>
+                            <Chip label={log.status_code} color={log.status_code < 400 ? "success" : "error"} size="small" />
+                          </TableCell>
+                          <TableCell align="right">{log.process_time_ms}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              </Paper>
             </Grid>
 
             <Grid size={{ xs: 12 }}>

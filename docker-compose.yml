@@ -41,9 +41,13 @@ services:
       - "3000:3000"
     volumes:
       - ./nodes.json:/app/nodes.json
+      - ./proxy_metrics.json:/app/proxy_metrics.json
     environment:
-      - JOBE_SERVERS=http://jobe1:80,http://jobe2:80
-      - MONGO_URI=mongodb://mongodb:27017
+      - JOBE_SERVERS={JOBE_SERVERS}
+      - MONGO_URI=${MONGO_URI}
+      - DEFAULT_SCHEDULING_ALGORITHM=${DEFAULT_SCHEDULING_ALGORITHM}
+      - LOGS_MAX_SIZE_MB=${LOGS_MAX_SIZE_MB}
+      - MAX_CONCURRENT_RUNS=${MAX_CONCURRENT_RUNS}
     depends_on:
       - jobe1
       - jobe2

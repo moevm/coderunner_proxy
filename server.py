@@ -1,4 +1,5 @@
 import os
+import psutil
 import json
 import asyncio
 import time
@@ -15,6 +16,42 @@ import httpx
 
 app = FastAPI()
 
+process = psutil.Process(os.getpid())
+METRICS_FILE = os.path.join(os.getcwd(), '/app/proxy_metrics.json')
+client_session = None
+
+@app.on_event("startup")
+async def startup_event():
+    global client_session
+    await init_db()
+    limits = httpx.Limits(max_connections=100, max_keepalive_connections=20)
+    client_session = httpx.AsyncClient(timeout=30.0, limits=limits)
+    print("[Proxy] Global HTTPX Client initialized")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    global client_session
+    if client_session:
+        await client_session.aclose()
+        print("[Proxy] Global HTTPX Client closed")
+
+def save_metrics_to_json(stats):
+    try:
+        data = []
+        if os.path.exists(METRICS_FILE) and os.path.getsize(METRICS_FILE) > 0:
+            with open(METRICS_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+        data.append(stats)
+        data = data[-1000:]
+
+        with open(METRICS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+    except Exception as e:
+        print(f"[Metrics Error] {e}")
+
 # CORS for development
 app.add_middleware(
     CORSMiddleware,
@@ -29,11 +66,24 @@ NODES_FILE = os.path.join(os.getcwd(), 'nodes.json')
 MAX_CONCURRENT_RUNS = int(os.getenv('MAX_CONCURRENT_RUNS', '10'))
 JOBE_BASE_PATH = '/jobe/index.php/restapi'
 MONGO_URI = os.getenv('MONGO_URI', 'mongodb://mongodb:27017')
+LOGS_MAX_SIZE_MB = int(os.getenv('LOGS_MAX_SIZE_MB', '512'))
+LOGS_MAX_SIZE_BYTES = LOGS_MAX_SIZE_MB * 1024 * 1024
+DEFAULT_ALGORITHM = os.getenv('DEFAULT_SCHEDULING_ALGORITHM', 'smart_power')
+
+scheduling_algorithm = DEFAULT_ALGORITHM # Default: smart_power, round_robin, weighted_round_robin, least_active
 
 # MongoDB Setup
 mongo_client = AsyncIOMotorClient(MONGO_URI)
 db = mongo_client.proxy_db
 logs_collection = db.logs
+
+async def init_db():
+    global logs_collection
+    existing = await db.list_collection_names()
+    if "logs" not in existing:
+        # Создание циклической коллекции (Capped Collection)
+        await db.create_collection("logs", capped=True, size=LOGS_MAX_SIZE_BYTES)
+    logs_collection = db.logs
 
 # Semaphore for queueing
 class CountedSemaphore(asyncio.Semaphore):
@@ -56,17 +106,63 @@ class CountedSemaphore(asyncio.Semaphore):
 run_semaphore = CountedSemaphore(MAX_CONCURRENT_RUNS)
 active_runs = 0
 current_server_index = 0
-scheduling_algorithm = "smart_power"  # Default: smart_power, round_robin, weighted_round_robin, least_active
 node_active_counts = {}  # Track active runs per node URL
 node_status_cache = {}  # Хранит {url: last_known_status_bool}
 
 
+async def forward_request(request: Request, endpoint: str, body: Any, target_server: str):
+    """Использует глобальный client_session вместо создания нового"""
+    global client_session
+    url = f"{target_server}{JOBE_BASE_PATH}{endpoint}"
+
+    # Очистка заголовков
+    headers = {k: v for k, v in request.headers.items() if k.lower() in ['content-type', 'x-api-key']}
+
+    try:
+        if endpoint == "/languages" and request.method == "GET":
+            # Логика объединения языков
+            nodes = get_jobe_nodes()
+            all_langs = set()
+            for n in nodes:
+                for l in n.get('languages', []):
+                    all_langs.add(l)
+
+            resp = await client_session.request(
+                method="GET",
+                url=url,
+                headers=headers,
+                timeout=5.0
+            )
+            formatted = [[l, "unknown"] for l in all_langs]
+            return JSONResponse(content=formatted)
+
+        # Основной прокси-запрос через единую сессию
+        resp = await client_session.request(
+            method=request.method,
+            url=url,
+            content=await request.body(),
+            headers=headers,
+            timeout=30.0
+        )
+        return Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            headers=dict(resp.headers)
+        )
+    except Exception as e:
+        print(f"[Proxy] Error forwarding to {url}: {e}")
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
 # --- НОВЫЙ БЛОК: Middleware для логирования ---
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
+    path = request.url.path
+    if path == "/api/logs":
+        return await call_next(request)
+
     start_time = time.perf_counter()
 
-    # Захват тела запроса
+    # Захват тела для POST запросов
     request_body = b""
     if request.method in ["POST", "PUT"]:
         request_body = await request.body()
@@ -76,36 +172,32 @@ async def log_requests(request: Request, call_next):
 
         request._receive = receive
 
-    # Выполнение запроса
     response = await call_next(request)
-
     process_time = time.perf_counter() - start_time
 
-    # Логируем только API и Jobe запросы
-    path = request.url.path
-    if path.startswith(("/api", "/jobe")) and path != "/api/health":
+    # Логирование и сбор метрик
+    if path.startswith(("/api", "/jobe")) and path not in ["/api/health", "/api/config/algorithm"]:
+        moscow_tz = datetime.timezone(datetime.timedelta(hours=3))
+
+        # Сбор метрик ресурсов
+        # stats = {
+        #     "timestamp": datetime.datetime.now(moscow_tz).isoformat(),
+        #     "cpu_usage_percent": process.cpu_percent(),
+        #     "memory_rss_mb": round(process.memory_info().rss / 1024 / 1024, 2),
+        #     "memory_vms_mb": round(process.memory_info().vms / 1024 / 1024, 2)
+        # }
+        #
+        # save_metrics_to_json(stats)
+
         log_entry = {
-            "timestamp": datetime.datetime.utcnow(),
+            "timestamp": datetime.datetime.now(moscow_tz).isoformat(),
             "method": request.method,
             "path": path,
             "status_code": response.status_code,
             "process_time_ms": round(process_time * 1000, 2),
-            "load_stats": {
-                "active_runs": active_runs,
-                "waiting_in_queue": run_semaphore.waiting
-            },
-            "target_server": getattr(request.state, "target_server", "none")
+            "target_server": getattr(request.state, "target_server", "none"),
         }
 
-        # Попытка распарсить payload
-        try:
-            if request_body:
-                log_entry["request_payload"] = json.loads(request_body)
-        except:
-            if request_body:
-                log_entry["request_payload"] = str(request_body)[:500]
-
-        # Фоновое сохранение
         asyncio.create_task(save_to_mongo(log_entry))
 
     return response
@@ -115,9 +207,22 @@ async def log_requests(request: Request, call_next):
 
 async def save_to_mongo(log_entry):
     try:
-        await logs_collection.insert_one(log_entry)
+        if logs_collection is not None:
+            await logs_collection.insert_one(log_entry)
     except Exception as e:
         print(f"[Mongo Error] {e}")
+
+@app.get("/api/logs")
+async def get_logs(limit: int = 50):
+    """Получение логов из циклического буфера"""
+    try:
+        cursor = logs_collection.find().sort("$natural", -1).limit(limit)
+        logs = await cursor.to_list(length=limit)
+        for log in logs:
+            log["_id"] = str(log["_id"])
+        return logs
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 class JobeNode:
     def __init__(self, url: str, name: str, languages: List[str], power: str):
@@ -303,31 +408,31 @@ async def get_next_server(req_path: str, body: Optional[Dict[str, Any]]) -> str:
 
 async def check_node_health(url: str, name: str) -> bool:
     """Проверяет доступность узла и логирует изменения состояния."""
-    async with httpx.AsyncClient() as client:
-        try:
-            # Легкий запрос для проверки жизни
-            response = await client.get(f"{url}{JOBE_BASE_PATH}/languages", timeout=2.0)
-            current_status = (response.status_code == 200)
-        except Exception:
-            current_status = False
+    try:
+        # Используем общий клиент
+        resp = await client_session.get(f"{url}/jobe/index.php/restapi/languages")
+        current_status = resp.status_code == 200
+    except:
+        current_status = False
 
     # Логирование только при ИЗМЕНЕНИИ состояния
     previous_status = node_status_cache.get(url, True)  # По умолчанию считаем, что всё ок
+    moscow_tz = datetime.timezone(datetime.timedelta(hours=3))
+    now_moscow = datetime.datetime.now(moscow_tz)
 
     if current_status != previous_status:
         node_status_cache[url] = current_status
-
-        # Формируем запись для MongoDB
         log_entry = {
-            "timestamp": datetime.datetime.utcnow(),
+            "timestamp": now_moscow.isoformat(),
             "type": "node_status_change",
             "node_name": name,
             "node_url": url,
             "is_online": current_status,
+            "method": "SYSTEM",  # Для унификации с таблицей
+            "path": f"Server {name} is now {'ONLINE' if current_status else 'OFFLINE'}",
+            "status_code": 200 if current_status else 500,
             "message": f"Server {name} is now {'ONLINE' if current_status else 'OFFLINE'}"
         }
-
-        # Отправляем в базу
         asyncio.create_task(save_to_mongo(log_entry))
         print(f"[Proxy] {log_entry['message']}")
 
@@ -432,44 +537,6 @@ async def proxy_jobe(request: Request, path: str):
                 active_runs -= 1
                 node_active_counts[target_server] = max(0, node_active_counts.get(target_server, 0) - 1)
         return None
-
-
-async def forward_request(request: Request, endpoint: str, body: Any, target_server: str):
-    url = f"{target_server}{JOBE_BASE_PATH}{endpoint}"
-
-    headers = {k: v for k, v in request.headers.items() if k.lower() in ['content-type', 'x-api-key']}
-
-    async with httpx.AsyncClient() as client:
-        try:
-            if endpoint == "/languages" and request.method == "GET":
-                # Special handling for languages union
-                nodes = get_jobe_nodes()
-                all_langs = set()
-                for n in nodes:
-                    for l in n.get('languages', []):
-                        all_langs.add(l)
-
-                # Fetch one to get format
-                resp = await client.request(
-                    method=request.method,
-                    url=url,
-                    headers=headers,
-                    timeout=5.0
-                )
-                formatted = [[l, "unknown"] for l in all_langs]
-                return JSONResponse(content=formatted)
-
-            resp = await client.request(
-                method=request.method,
-                url=url,
-                content=await request.body(),
-                headers=headers,
-                timeout=30.0
-            )
-            return Response(content=resp.content, status_code=resp.status_code, headers=dict(resp.headers))
-        except Exception as e:
-            print(f"[Proxy] Error forwarding: {e}")
-            return JSONResponse(content={"error": str(e)}, status_code=500)
 
 
 # Serve static files
