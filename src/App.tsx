@@ -1,8 +1,3 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
 import React, { useState, useEffect } from 'react';
 import {
   Container,
@@ -57,7 +52,7 @@ import {
 } from '@mui/icons-material';
 import { motion } from 'motion/react';
 
-// Создаем тему оформления
+// Тема оформления
 const theme = createTheme({
   palette: {
     primary: {
@@ -98,6 +93,7 @@ interface HealthStatus {
   nodes: JobeNode[];
   algorithm: string;
   source?: string;
+  proxy_port?: number;
   queue: {
     active: number;
     limit: number;
@@ -113,8 +109,8 @@ export default function App() {
   const [logs, setLogs] = useState<any[]>([]);
   const [logsLoading, setLogsLoading] = useState(false);
   const [testing, setTesting] = useState(false);
-  const [totalTasksInput, setTotalTasksInput] = useState(1000);
-  const [concurrencyInput, setConcurrencyInput] = useState(50);
+  const [totalTasksInput, setTotalTasksInput] = useState(100);
+  const [concurrencyInput, setConcurrencyInput] = useState(10);
   const [infoOpen, setInfoOpen] = useState(false);
 
   const fetchLogs = async () => {
@@ -130,15 +126,9 @@ export default function App() {
       }
   };
 
-    const exportToJson = () => {
-      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(logs, null, 2));
-      const downloadAnchorNode = document.createElement('a');
-      downloadAnchorNode.setAttribute("href", dataStr);
-      downloadAnchorNode.setAttribute("download", `jobe_logs_${new Date().toISOString()}.json`);
-      document.body.appendChild(downloadAnchorNode);
-      downloadAnchorNode.click();
-      downloadAnchorNode.remove();
-    };
+  const handleExportCSV = () => {
+      window.location.href = '/api/logs/export';
+  };
 
   const fetchStatus = async () => {
     setLoading(true);
@@ -162,7 +152,7 @@ export default function App() {
     const taskTemplates = [
       { name: 'Low (Print)', code: 'print("Hello world")', lang: 'python3' },
       { name: 'Medium (Single Library)', code: 'import numpy as np\na = np.array([1, 2, 3])\nprint(a.mean())', lang: 'python3' },
-      { name: 'High (NumPy)', code: 'def check(a, b, c):\n if a > b:\n if b > c:\n for i in range(10):\n while a < 100:\n a += 1\n if a == 50: break\n elif a == c:\n for j in range(5): print(j)\n else:\n try:\n res = a / b\n except:\n res = 0\n return res\n# Повторим блоки, чтобы набрать controls > 10\nprint(check(1, 2, 3))\nprint(check(4, 5, 6))', lang: 'python3' },
+      { name: 'High (NumPy)', code: 'def check(a, b, c):\n    if a > b:\n        if b > c:\n            for i in range(10):\n                while a < 100:\n                    a += 1\n                    if a == 50:\n                        break\n        elif a == c:\n            for j in range(5):\n                print(j)\n    else:\n        try:\n            res = a / b\n        except:\n            res = 0\n    return res\nprint(check(1, 2, 3))\nprint(check(4, 5, 6))', lang: 'python3' },
     ];
 
     const TOTAL_TASKS = totalTasksInput;
@@ -220,7 +210,7 @@ export default function App() {
           <Toolbar>
             <HubIcon sx={{ color: 'primary.main', mr: 2 }} />
             <Typography variant="h6" component="div" sx={{ flexGrow: 1, color: 'text.primary' }}>
-              Панель управления Jobe Proxy
+              Панель управления CodeRunner Proxy
             </Typography>
             <Button
               variant="outlined"
@@ -453,10 +443,10 @@ export default function App() {
                     <Button
                       variant="contained"
                       color="secondary"
-                      onClick={exportToJson}
-                      disabled={logs.length === 0}
+                      onClick={handleExportCSV}
+                      disabled={logsLoading}
                     >
-                      Экспорт JSON
+                      Экспорт CSV
                     </Button>
                   </Box>
                 </Box>
@@ -498,7 +488,7 @@ export default function App() {
               <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }}>
                 <Paper sx={{ p: 2, mb: 3 }}>
                   <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-                    <Typography variant="h6">Нагрузочное тестирование</Typography>
+                    <Typography variant="h6">Проверка работоспособности серверов</Typography>
                     <Button
                       variant="contained"
                       color="primary"
@@ -573,7 +563,9 @@ export default function App() {
                     # В настройках CodeRunner:
                   </Typography>
                   <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
-                    Jobe Server: <Box component="span" sx={{ color: 'white' }}>proxy:3000</Box>
+                    Jobe Server: <Box component="span" sx={{ color: 'white' }}>
+                      proxy:{status?.proxy_port || window.location.port || '3000'}
+                    </Box>
                   </Typography>
                   <Box sx={{ mt: 2, pt: 2, borderTop: '1px solid #334155' }}>
                     <Typography variant="caption" sx={{ color: '#94a3b8' }}>

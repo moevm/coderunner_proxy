@@ -1,0 +1,4 @@
+FROM trampgeek/jobeinabox@sha256:1dfe026e8dd5cee4ea93bc7366207ae3e9910888d5dc343c85fb1508e8aebd8f
+
+# Необходимые библиотеки для студентов
+RUN pip3 install --no-cache-dir numpy

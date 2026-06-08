@@ -1,5 +1,0 @@
-{
-  "name": "Jobe Proxy for CodeRunner",
-  "description": "Прокси-сервер для балансировки нагрузки для Moodle CodeRunner, который распределяет задачи выполнения по нескольким узлам Jobe.",
-  "requestFramePermissions": []
-}

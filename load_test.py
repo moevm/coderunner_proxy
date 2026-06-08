@@ -1,4 +1,5 @@
 import asyncio
+import json
 import httpx
 import time
 import random
@@ -6,14 +7,17 @@ import sys
 import ast
 import os
 
+# URL прокси, задать в соответствии с env (по умолчанию 3000)
 PROXY_URL = 'http://localhost:3000/jobe/index.php/restapi/runs'
+
+# Имя файла для хранения узлов
+nodes_file = 'nodes.json'
 
 HEAVY_LIBRARIES = {
     'numpy', 'pandas', 'scipy', 'sklearn', 'torch', 'tensorflow',
     'matplotlib', 'cv2', 'PIL', 'nltk', 'spacy', 'requests',
     'httpx', 'sqlalchemy', 'keras', 'statsmodels'
 }
-
 
 def analyze_complexity(code: str) -> str:
     try:
@@ -26,7 +30,7 @@ def analyze_complexity(code: str) -> str:
             if isinstance(node, (ast.If, ast.For, ast.While, ast.With, ast.Try, ast.ExceptHandler)):
                 controls += 1
             if isinstance(node, (ast.Import, ast.ImportFrom)):
-                heavy_imports += 1  # Упрощенно для теста считаем все импорты в задачах
+                heavy_imports += 1
 
         score = (lines / 20) + controls + (nodes_count / 50) + (heavy_imports * 7)
         if score > 10: return 'High'
@@ -40,11 +44,20 @@ class SchedulerEmulator:
         self.algorithm = algorithm
         self.index = 0
         # Виртуальные узлы
-        self.nodes = [
-            {'url': 'http://jobe-low:80', 'name': 'Jobe-Low', 'power': 'Low'},
-            {'url': 'http://jobe-mid:80', 'name': 'Jobe-Medium', 'power': 'Medium'},
-            {'url': 'http://jobe-high:80', 'name': 'Jobe-High', 'power': 'High'}
-        ]
+        try:
+            if os.path.exists(nodes_file):
+                with open(nodes_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    self.nodes = data.get('nodes', [])
+                print(f"--- Loaded {len(self.nodes)} nodes from {nodes_file} ---")
+            else:
+                print(f"--- Warning: {nodes_file} not found. Using default nodes. ---")
+                self.nodes = [
+                    {'url': 'http://jobe-low:80', 'name': 'Jobe-Low', 'power': 'Low'}
+                ]
+        except Exception as e:
+            print(f"--- Error loading nodes: {e}. Using empty list. ---")
+            self.nodes = []
         # Счетчик активных задач на каждом узле (для least_active)
         self.node_active_counts = {n['url']: 0 for n in self.nodes}
 
@@ -145,34 +158,85 @@ print(check(4, 5, 6))
     }
 ]
 
-
 # --- ЛОГИКА ТЕСТА ---
-
 async def run_task(client, task, task_id, scheduler):
-    start = time.time()
-    # "Бронируем" узел в планировщике
-    node = scheduler.acquire_node(task['code'])
-    complexity = analyze_complexity(task['code'])
+    max_retries = 5  # Соответствует логике в server.py
+    attempt = 0
 
+    while attempt < max_retries:
+        attempt += 1
+        start_total = time.time()
+
+        # Выбор узла
+        node = scheduler.acquire_node(task['code'])
+        complexity = analyze_complexity(task['code'])
+
+        try:
+            resp = await client.post(PROXY_URL, json={
+                'run_spec': {'language_id': task['language'], 'sourcecode': task['code']}
+            }, timeout=60.0)
+
+            # Проброс ошибки для активации повторного запуска
+            if resp.status_code == 500:
+                raise httpx.HTTPStatusError("Server Error", request=None, response=resp)
+
+            receive_end = time.time()
+            total_duration_ms = (receive_end - start_total) * 1000
+            server_process_time_ms = float(resp.headers.get("X-Process-Time", 0))
+            network_latency_ms = max(0, int(total_duration_ms - server_process_time_ms))
+
+            sys.stdout.write('.' if attempt == 1 else 'R')  # '.' - успех, 'R' - успех после retry
+            sys.stdout.flush()
+
+            # Успешное завершение: освобождение узла и возвращение результата
+            scheduler.release_node(node['url'])
+            return {
+                'success': True,
+                'complexity': complexity,
+                'node': node['name'],
+                'total_ms': total_duration_ms,
+                'server_ms': server_process_time_ms,
+                'network_ms': network_latency_ms,
+                'retries': attempt - 1
+            }
+
+        except (Exception, httpx.HTTPStatusError):
+            # Освобождение узла текущей неудачной попытки
+            scheduler.release_node(node['url'])
+
+            if attempt < max_retries:
+                # Пауза перед следующей попыткой
+                await asyncio.sleep(2)
+                continue
+            else:
+                sys.stdout.write('F')
+                sys.stdout.flush()
+                return None
+
+
+def get_proxy_resources(metrics_file="proxy_metrics.json"):
+    """Считывает метрики из файла и вычисляет средние значения."""
     try:
-        resp = await client.post(PROXY_URL, json={
-            'run_spec': {'language_id': task['language'], 'sourcecode': task['code']}
-        }, timeout=60.0)
+        if os.path.exists(metrics_file):
+            with open(metrics_file, 'r', encoding='utf-8') as f:
+                # чтение списка записей метрик
+                data = json.load(f)
 
-        duration = (time.time() - start) * 1000
-        sys.stdout.write('.' if resp.status_code == 200 else 'F')
-        sys.stdout.flush()
+                if not data:
+                    return 0, 0
 
-        return {
-            'success': resp.status_code == 200,
-            'complexity': complexity,
-            'node': node['name'],
-            'duration': duration
-        }
-    finally:
-        # Освобождаем узел
-        scheduler.release_node(node['url'])
+                # Извлечение значения CPU и RSS
+                cpu_values = [entry.get('cpu_usage_percent', 0) for entry in data]
+                rss_values = [entry.get('memory_rss_mb', 0) for entry in data]
 
+                avg_cpu = sum(cpu_values) / len(cpu_values)
+                avg_rss = sum(rss_values) / len(rss_values)
+
+                return avg_cpu, avg_rss
+        return 0, 0
+    except Exception as e:
+        print(f"\nОшибка при чтении метрик: {e}")
+        return 0, 0
 
 async def start_load_test(total_tasks=100, concurrency=10, algo="smart_power", custom_code=None):
     print(f'=== Starting Load Test | Algo: {algo} ===')
@@ -188,16 +252,18 @@ async def start_load_test(total_tasks=100, concurrency=10, algo="smart_power", c
 
     scheduler = SchedulerEmulator(algorithm=algo)
     results = []
-    start_time = time.time()
 
-    async with httpx.AsyncClient() as client:
+    limits = httpx.Limits(max_connections=concurrency, max_keepalive_connections=concurrency)
+
+    async with httpx.AsyncClient(limits=limits, timeout=60.0) as client:
+        start_time_test = time.perf_counter()
         queue = asyncio.Queue()
         for i in range(total_tasks): queue.put_nowait(i + 1)
 
         async def worker():
             while True:
                 try:
-                    # Пытаемся взять задачу без ожидания
+                    # Попытка достать из очереди задачу без ожидания
                     task_idx = queue.get_nowait()
                 except asyncio.QueueEmpty:
                     # Только если очередь ТОЧНО пуста, выходим
@@ -208,38 +274,52 @@ async def start_load_test(total_tasks=100, concurrency=10, algo="smart_power", c
                     res = await run_task(client, task, task_idx, scheduler)
                     results.append(res)
                 except Exception as e:
-                    # Если задача упала, логируем, но не даем воркеру умереть
+                    # Падение задачи, логирование без завершения
                     print(f"\nWorker error: {e}")
                 finally:
                     queue.task_done()
 
         workers = [asyncio.create_task(worker()) for _ in range(min(concurrency, total_tasks))]
         await asyncio.gather(*workers)
+        end_time_test = time.perf_counter()
 
     # Итоги
     # --- РАСЧЕТ ИТОГОВ ---
-    end_time = time.time()
-    total_duration_sec = end_time - start_time
-    total_duration_ms = total_duration_sec * 1000
-    throughput = len(results) / total_duration_sec if total_duration_sec > 0 else 0
+    avg_cpu, avg_rss = get_proxy_resources("proxy_metrics.json")
+    valid_results = [r for r in results if r is not None and r['success']]
+    total_duration_sec = end_time_test - start_time_test
 
     print(f'\n\n' + '=' * 40)
     print(f'        LOAD TEST FINAL RESULTS')
     print(f'=' * 40)
-    print(f'Total Tasks Run:      {len(results)}')
-    print(f'Total Time Taken:     {total_duration_sec:.2f} seconds ({total_duration_ms:.2f} ms)')
-    print(f'Throughput:           {throughput:.2f} tasks/sec')
-    print(f'=' * 40)
 
-    print(f'\n=== Results by Predicted Complexity ===')
+    avg_total = sum(r['total_ms'] for r in valid_results) / len(valid_results)
+    avg_server = sum(r['server_ms'] for r in valid_results) / len(valid_results)
+    avg_network = sum(r['network_ms'] for r in valid_results) / len(valid_results)
+    throughput = len(valid_results) / total_duration_sec
+
+    print(f'Общее время теста:    {total_duration_sec:.2f} сек')
+    print(f'Пропускная способность: {throughput:.2f} запр/сек')
+    print(f'-' * 40)
+    print(f'Метрика задержки      |  Среднее время (ms)')
+    print(f'-' * 40)
+    print(f'Полный цикл (RTT)     |  {avg_total:10.2f} ms')
+    print(f'Обработка сервером    |  {avg_server:10.2f} ms (Proxy + Jobe)')
+    print(f'Сеть и ожидание       |  {avg_network:10.2f} ms (Client -> Server -> Client)')
+    print(f'=' * 40)
+    print(f'\n=== Потребление ресурсов прокси ===')
+    print(f'Средняя нагрузка CPU:   {avg_cpu:.2f}%')
+    print(f'Средняя память RSS:    {avg_rss:.2f} MB')
+    print(f'=' * 40 + '\n')
+
+    print(f'\n=== Анализ по сложности задач ===')
     for level in ['Low', 'Medium', 'High']:
-        level_results = [r for r in results if r.get('complexity') == level]
-        count = len(level_results)
-        if count > 0:
-            avg_time = sum([r['duration'] for r in level_results]) / count
-            # Считаем процент от общего числа задач
-            percentage = (count / len(results)) * 100
-            print(f'{level:6}: {count:3} tasks ({percentage:4.1f}%) | Avg Response: {avg_time:8.2f}ms')
+        lvl_res = [r for r in valid_results if r['complexity'] == level]
+        if lvl_res:
+            a_total = sum(r['total_ms'] for r in lvl_res) / len(lvl_res)
+            a_server = sum(r['server_ms'] for r in lvl_res) / len(lvl_res)
+            pct = (len(lvl_res) / len(valid_results)) * 100
+            print(f'{level:7} ({pct:4.1f}%) -> Всего: {a_total:8.2f}ms | Сервер: {a_server:8.2f}ms')
     print(f'=' * 40 + '\n')
 
 
