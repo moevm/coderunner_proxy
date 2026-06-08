@@ -1,0 +1,22 @@
+{
+  "nodes": [
+    {
+      "url": "http://jobe1:80",
+      "name": "Jobe Node 1",
+      "languages": ["python3", "c", "cpp"],
+      "power": "High"
+    },
+    {
+      "url": "http://jobe2:80",
+      "name": "Jobe Node 2",
+      "languages": ["python3", "java", "nodejs"],
+      "power": "Medium"
+    },
+    {
+      "url": "http://jobe3:80",
+      "name": "Jobe Node 3",
+      "languages": ["python3", "java", "nodejs"],
+      "power": "Low"
+    }
+  ]
+}

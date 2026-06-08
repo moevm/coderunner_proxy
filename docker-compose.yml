@@ -1,0 +1,116 @@
+services:
+  db:
+    image: postgres:13
+    environment:
+      POSTGRES_DB: moodle
+      POSTGRES_USER: moodle
+      POSTGRES_PASSWORD: moodle
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    networks:
+      - moodle-net
+
+  moodle:
+    image: moodlehq/moodle-php-apache:8.2
+    environment:
+      MOODLE_DATABASE_TYPE: pgsql
+      MOODLE_DATABASE_HOST: db
+      MOODLE_DATABASE_NAME: moodle
+      MOODLE_DATABASE_USER: moodle
+      MOODLE_DATABASE_PASSWORD: moodle
+      MOODLE_SITE_URL: http://localhost:8080
+    volumes:
+      - moodle_data:/var/www/html
+      - ./moodledata:/var/moodledata
+      - ./init-moodle.sh:/init-moodle.sh
+    ports:
+      - "8080:80"
+    depends_on:
+      - db
+    networks:
+      - moodle-net
+      - jobe-net
+    command: bash /init-moodle.sh
+
+  proxy:
+    build: .
+    image: jobe-proxy:latest
+    ports:
+      - "${PROXY_PORT:-3000}:${PROXY_PORT:-3000}"
+    volumes:
+      - ./nodes.json:/app/nodes.json
+      - ./proxy_metrics.json:/app/proxy_metrics.json
+    environment:
+      - PROXY_PORT=${PROXY_PORT}
+      - IF_STATS=${IF_STATS}
+      - JOBE_SERVERS=${JOBE_SERVERS}
+      - MONGO_URI=${MONGO_URI}
+      - DEFAULT_SCHEDULING_ALGORITHM=${DEFAULT_SCHEDULING_ALGORITHM}
+      - LOGS_MAX_SIZE_MB=${LOGS_MAX_SIZE_MB}
+      - MAX_CONCURRENT_RUNS=${MAX_CONCURRENT_RUNS}
+    depends_on:
+      - jobe1
+      - jobe2
+      - mongodb
+    networks:
+      - jobe-net
+
+  jobe1:
+    build:
+      context: .
+      dockerfile: Dockerfile.jobe
+    image: custom-jobe-with-libs:latest
+    restart: unless-stopped
+    networks:
+      - jobe-net
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 2048M
+
+  jobe2:
+    image: custom-jobe-with-libs:latest
+    depends_on:
+      - jobe1
+    restart: unless-stopped
+    networks:
+      - jobe-net
+    deploy:
+      resources:
+        limits:
+          cpus: '3.0'
+          memory: 1024M
+
+  jobe3:
+    image: custom-jobe-with-libs:latest
+    depends_on:
+      - jobe1
+    restart: unless-stopped
+    networks:
+      - jobe-net
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+
+  mongodb:
+    image: mongo:latest
+    container_name: mongo
+    restart: always
+    volumes:
+      - mongo_data:/data/db
+    ports:
+      - "27017:27017"
+    networks:
+      - jobe-net
+
+networks:
+  moodle-net:
+  jobe-net:
+
+volumes:
+  db_data:
+  moodle_data:
+  mongo_data:
