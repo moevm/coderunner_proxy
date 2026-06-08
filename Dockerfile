@@ -1,4 +1,4 @@
-FROM public.ecr.aws/docker/library/node:20-slim AS frontend-builder
+FROM public.ecr.aws/docker/library/node:20 AS frontend-builder
 WORKDIR /app
 
 COPY package*.json ./
